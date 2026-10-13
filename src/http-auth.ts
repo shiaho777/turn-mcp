@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import { IncomingMessage, ServerResponse } from 'http';
 import { APP_CONFIG } from './config.js';
 import { headerString, readCookie, sendJson, sendJsonRpcError } from './http-util.js';
@@ -26,10 +26,9 @@ export function extractApiKey(req: IncomingMessage): string | undefined {
 }
 
 function safeEqual(a: string, b: string): boolean {
-    if (a.length !== b.length) {
-        return false;
-    }
-    return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+    const left = createHash('sha256').update(a).digest();
+    const right = createHash('sha256').update(b).digest();
+    return timingSafeEqual(left, right);
 }
 
 export function resolveRequestRole(req: IncomingMessage): ApiRole {

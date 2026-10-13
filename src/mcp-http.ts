@@ -54,7 +54,9 @@ export class McpGateway {
         }
     }
     async closeAll(): Promise<void> {
-        const closing = Array.from(this.sessions.values()).map(async ({ transport, server }) => {
+        const closing = Array.from(this.sessions.entries()).map(async ([sid, { transport, server }]) => {
+            this.waitStore.interruptSession(sid, 'session-closed');
+            this.sessions.delete(sid);
             try {
                 await transport.close();
             }

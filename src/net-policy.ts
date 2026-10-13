@@ -45,7 +45,7 @@ export function originAllowed(origin: string | undefined, hostHeader: string | u
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
         return false;
     }
-    return parsed.hostname.toLowerCase() === hostnameFromHostHeader(hostHeader);
+    return parsed.host.toLowerCase() === hostHeader.trim().toLowerCase();
 }
 
 export function advertisedHttpHost(bindHost: string): string {
@@ -108,9 +108,40 @@ export function webhookUrlError(raw: string): string | null {
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
         return 'Webhook URL must use http or https.';
     }
-    const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-    if (METADATA_HOSTS.has(hostname)) {
+    if (isMetadataHost(parsed.hostname)) {
         return 'Webhook URL points at a blocked metadata host.';
     }
     return null;
+}
+
+function stripHostBrackets(host: string): string {
+    return host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+}
+
+function ipv4MappedToDotted(host: string): string | null {
+    const value = stripHostBrackets(host);
+    const dotted = value.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+    if (dotted) {
+        return dotted[1];
+    }
+    const hex = value.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (!hex) {
+        return null;
+    }
+    const high = Number.parseInt(hex[1], 16);
+    const low = Number.parseInt(hex[2], 16);
+    return `${(high >> 8) & 255}.${high & 255}.${(low >> 8) & 255}.${low & 255}`;
+}
+
+function isMetadataHost(hostname: string): boolean {
+    const host = stripHostBrackets(hostname);
+    if (METADATA_HOSTS.has(host)) {
+        return true;
+    }
+    const mapped = ipv4MappedToDotted(host);
+    if (mapped && METADATA_HOSTS.has(mapped)) {
+        return true;
+    }
+    const compactV6 = host.replace(/:0+/g, ':').replace(/::+/g, '::');
+    return compactV6 === 'fd00:ec2::254';
 }

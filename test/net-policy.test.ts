@@ -14,6 +14,9 @@ test('origin must match the request host', () => {
     assert.equal(originAllowed(undefined, '127.0.0.1:3737'), true);
     assert.equal(originAllowed('http://127.0.0.1:3737', '127.0.0.1:3737'), true);
     assert.equal(originAllowed('http://evil.example', '127.0.0.1:3737'), false);
+    assert.equal(originAllowed('http://127.0.0.1:9', '127.0.0.1:3737'), false);
+    assert.equal(originAllowed('https://127.0.0.1:3737', '127.0.0.1:3737'), true);
+    assert.equal(originAllowed('http://[::1]:3737', '[::1]:3737'), true);
 });
 
 test('non-loopback bind requires an operator key and auth', () => {
@@ -27,6 +30,8 @@ test('webhook and mcp urls reject metadata hosts and shell characters', () => {
     assert.equal(webhookUrlError(''), null);
     assert.equal(webhookUrlError('https://example.com/hook'), null);
     assert.match(webhookUrlError('http://169.254.169.254/latest') || '', /metadata/);
+    assert.match(webhookUrlError('http://[::ffff:169.254.169.254]/latest') || '', /metadata/);
+    assert.match(webhookUrlError('http://[fd00:ec2::254]/latest') || '', /metadata/);
     assert.match(webhookUrlError('file:///etc/passwd') || '', /http/);
     assert.equal(mcpServerUrlError('http://127.0.0.1:3737/mcp'), null);
     assert.match(mcpServerUrlError('http://127.0.0.1:3737/mcp";touch /tmp/x') || '', /not allowed/);
