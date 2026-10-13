@@ -1,4 +1,4 @@
-var CACHE_NAME = 'turn-mcp-v2';
+var CACHE_NAME = 'turn-mcp-v3';
 var STATIC_ASSETS = ['/', '/app.js', '/styles.css', '/i18n.js', '/manifest.json'];
 self.addEventListener('install', function (event) {
     self.skipWaiting();

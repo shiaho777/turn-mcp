@@ -1,5 +1,9 @@
+import { randomUUID } from 'crypto';
 import { APP_CONFIG } from './config.js';
 import type { HistoryPersistence } from './history-persistence.js';
+
+export type InterruptReason = 'shutdown' | 'session-closed';
+
 export interface WaitSummary {
     id: string;
     sessionId: string;
@@ -15,6 +19,7 @@ export interface WaitHistoryItem extends WaitSummary {
     resolution: 'message' | 'timeout' | 'canceled' | 'interrupted';
     finalMessageLength: number;
     userMessage?: string;
+    interruptReason?: InterruptReason;
 }
 export interface WaitHistoryQuery {
     limit?: number;
@@ -40,8 +45,10 @@ export type WaitResolution = {
     kind: 'canceled';
 } | {
     kind: 'interrupted';
+    reason: InterruptReason;
 } | {
     kind: 'busy';
+    scope: 'session' | 'global';
     activeWaitIds: string[];
 };
 export type WaitStoreEvent = {
@@ -62,6 +69,7 @@ export type WaitStoreEvent = {
     sessionId: string;
     activeWaitIds: string[];
     contextLength: number;
+    scope: 'session' | 'global';
 } | {
     type: 'wait_responded';
     waitId: string;
@@ -80,13 +88,18 @@ export type WaitStoreEvent = {
     type: 'wait_resolved';
     waitId: string;
     sessionId: string;
-    resolution: 'message' | 'timeout' | 'canceled';
+    resolution: 'message' | 'timeout' | 'canceled' | 'interrupted';
 } | {
     type: 'wait_extended';
     waitId: string;
     sessionId: string;
     additionalSeconds: number;
     newExpiresAt: number;
+} | {
+    type: 'wait_interrupted';
+    waitId: string;
+    sessionId: string;
+    reason: InterruptReason;
 };
 interface InternalWait {
     summary: WaitSummary;
@@ -121,6 +134,17 @@ export class WaitStore {
         agentName?: string;
         timeoutMs: number;
     }): Promise<WaitResolution> {
+        if (this.waits.size >= APP_CONFIG.maxPendingWaits) {
+            const activeWaitIds = Array.from(this.waits.keys()).slice(0, 20);
+            this.emit({
+                type: 'wait_busy',
+                sessionId: input.sessionId,
+                activeWaitIds,
+                contextLength: input.context.length,
+                scope: 'global',
+            });
+            return Promise.resolve({ kind: 'busy', scope: 'global', activeWaitIds });
+        }
         const activeSet = this.sessionActiveWaits.get(input.sessionId);
         if (activeSet && activeSet.size >= APP_CONFIG.maxConcurrentWaitsPerSession) {
             const activeWaitIds = Array.from(activeSet);
@@ -129,11 +153,12 @@ export class WaitStore {
                 sessionId: input.sessionId,
                 activeWaitIds,
                 contextLength: input.context.length,
+                scope: 'session',
             });
-            return Promise.resolve({ kind: 'busy', activeWaitIds });
+            return Promise.resolve({ kind: 'busy', scope: 'session', activeWaitIds });
         }
         const noTimeout = input.timeoutMs <= 0;
-        const waitId = this.createWaitId();
+        const waitId = `wait_${randomUUID()}`;
         const now = Date.now();
         const summary: WaitSummary = {
             id: waitId,
@@ -167,18 +192,18 @@ export class WaitStore {
                 }
                 finished = true;
                 const state = this.waits.get(waitId);
-                if (state) {
-                    if (state.timeoutTimer)
-                        clearTimeout(state.timeoutTimer);
-                    this.waits.delete(waitId);
+                if (state?.timeoutTimer) {
+                    clearTimeout(state.timeoutTimer);
                 }
-                const activeSet = this.sessionActiveWaits.get(input.sessionId);
-                if (activeSet) {
-                    activeSet.delete(waitId);
-                    if (activeSet.size === 0)
+                this.waits.delete(waitId);
+                const sessionWaits = this.sessionActiveWaits.get(input.sessionId);
+                if (sessionWaits) {
+                    sessionWaits.delete(waitId);
+                    if (sessionWaits.size === 0) {
                         this.sessionActiveWaits.delete(input.sessionId);
+                    }
                 }
-                if (resolution.kind === 'message' || resolution.kind === 'timeout' || resolution.kind === 'canceled') {
+                if (resolution.kind === 'message' || resolution.kind === 'timeout' || resolution.kind === 'canceled' || resolution.kind === 'interrupted') {
                     const userMsg = state?.userMessage;
                     this.pushHistory({
                         ...summary,
@@ -186,6 +211,7 @@ export class WaitStore {
                         resolution: resolution.kind,
                         finalMessageLength: resolution.kind === 'message' ? resolution.text.length : 0,
                         userMessage: resolution.kind === 'message' ? (userMsg || '') : undefined,
+                        interruptReason: resolution.kind === 'interrupted' ? resolution.reason : undefined,
                     });
                     this.emit({
                         type: 'wait_resolved',
@@ -222,24 +248,17 @@ export class WaitStore {
     }
     listPendingWaits(): WaitSummary[] {
         return Array.from(this.waits.values())
-            .map((v) => v.summary)
+            .map((item) => item.summary)
             .sort((a, b) => a.createdAt - b.createdAt);
     }
     listHistory(query: WaitHistoryQuery = {}): WaitHistoryItem[] {
-        const rawLimit = query.limit;
-        const safeLimit = Number.isInteger(rawLimit) ? Math.max(1, Math.min(1000, rawLimit as number)) : 100;
-        const rawOffset = query.offset;
-        const safeOffset = Number.isInteger(rawOffset) ? Math.max(0, rawOffset as number) : 0;
-        const filtered = this.filterHistory(query);
-        return filtered.slice(safeOffset, safeOffset + safeLimit);
+        const { items } = this.queryHistory(query);
+        return items;
     }
     countHistory(query: WaitHistoryQuery = {}): number {
         return this.filterHistory(query).length;
     }
-    queryHistory(query: WaitHistoryQuery = {}): {
-        items: WaitHistoryItem[];
-        total: number;
-    } {
+    queryHistory(query: WaitHistoryQuery = {}): { items: WaitHistoryItem[]; total: number } {
         const rawLimit = query.limit;
         const safeLimit = Number.isInteger(rawLimit) ? Math.max(1, Math.min(1000, rawLimit as number)) : 100;
         const rawOffset = query.offset;
@@ -262,7 +281,7 @@ export class WaitStore {
                 return false;
             }
             if (keywordFilter) {
-                const haystack = `${item.context}\n${item.question || ''}`.toLowerCase();
+                const haystack = `${item.context}\n${item.question || ''}\n${item.userMessage || ''}`.toLowerCase();
                 if (!haystack.includes(keywordFilter)) {
                     return false;
                 }
@@ -280,80 +299,67 @@ export class WaitStore {
     }
     listSessionSummaries(): SessionSummary[] {
         const map = new Map<string, SessionSummary>();
+        const pendingBySession = new Map<string, WaitSummary[]>();
         for (const wait of this.waits.values()) {
-            const s = wait.summary;
-            const existing = map.get(s.sessionId);
-            if (existing) {
-                existing.pendingWaits!.push(s);
-                if (s.createdAt > existing.lastActivity)
-                    existing.lastActivity = s.createdAt;
-            }
-            else {
-                map.set(s.sessionId, {
-                    sessionId: s.sessionId,
-                    interactionCount: 0,
-                    lastActivity: s.createdAt,
-                    status: 'pending',
-                    pendingWaits: [s],
-                    pendingWait: s,
-                });
-            }
+            const list = pendingBySession.get(wait.summary.sessionId) ?? [];
+            list.push(wait.summary);
+            pendingBySession.set(wait.summary.sessionId, list);
         }
-        for (const h of this.history) {
-            const t = h.resolvedAt || h.createdAt;
-            const existing = map.get(h.sessionId);
+        for (const [sessionId, pending] of pendingBySession) {
+            pending.sort((a, b) => a.createdAt - b.createdAt);
+            map.set(sessionId, {
+                sessionId,
+                interactionCount: 0,
+                lastActivity: pending[pending.length - 1].createdAt,
+                status: 'pending',
+                pendingWaits: pending,
+                pendingWait: pending[0],
+            });
+        }
+        for (const item of this.history) {
+            const activityAt = item.resolvedAt || item.createdAt;
+            const existing = map.get(item.sessionId);
             if (existing) {
                 existing.interactionCount++;
-                if (t > existing.lastActivity)
-                    existing.lastActivity = t;
-                if (existing.pendingWaits && existing.pendingWaits.length > 0) {
-                    existing.pendingWait = existing.pendingWaits[0];
+                if (activityAt > existing.lastActivity) {
+                    existing.lastActivity = activityAt;
                 }
             }
             else {
-                map.set(h.sessionId, {
-                    sessionId: h.sessionId,
+                map.set(item.sessionId, {
+                    sessionId: item.sessionId,
                     interactionCount: 1,
-                    lastActivity: t,
-                    status: h.resolution,
+                    lastActivity: activityAt,
+                    status: item.resolution,
                 });
             }
         }
         return Array.from(map.values());
     }
-    respond(waitId: string, userMessage: string): {
-        ok: true;
-    } | {
-        ok: false;
-        reason: string;
-    } {
+    respond(waitId: string, userMessage: string): { ok: true } | { ok: false; reason: string } {
         const state = this.waits.get(waitId);
         if (!state) {
             return { ok: false, reason: 'wait-not-found' };
         }
         const trimmed = userMessage.trim();
+        if (!trimmed) {
+            return { ok: false, reason: 'empty-message' };
+        }
         if (trimmed.length > APP_CONFIG.maxUserMessageChars) {
             return { ok: false, reason: `message-too-long(max=${APP_CONFIG.maxUserMessageChars})` };
         }
-        const finalText = trimmed ? `${trimmed}\n\n${APP_CONFIG.reinforcementSuffix}` : APP_CONFIG.reinforcementSuffix;
         state.userMessage = trimmed;
         this.emit({
             type: 'wait_responded',
             waitId,
             sessionId: state.summary.sessionId,
             userMessageLength: trimmed.length,
-            finalMessageLength: finalText.length,
+            finalMessageLength: trimmed.length,
         });
-        state.resolve({ kind: 'message', text: finalText });
+        state.resolve({ kind: 'message', text: trimmed });
         return { ok: true };
     }
-    extend(waitId: string, additionalSeconds: number): {
-        ok: true;
-        newExpiresAt: number;
-    } | {
-        ok: false;
-        reason: string;
-    } {
+    extend(waitId: string, additionalSeconds: number): { ok: true; newExpiresAt: number } | { ok: false; reason: string } {
         if (!Number.isInteger(additionalSeconds) || additionalSeconds < 30 || additionalSeconds > 3600) {
             return { ok: false, reason: 'invalid-seconds(range=30-3600)' };
         }
@@ -361,8 +367,9 @@ export class WaitStore {
         if (!state) {
             return { ok: false, reason: 'wait-not-found' };
         }
-        if (state.timeoutTimer)
+        if (state.timeoutTimer) {
             clearTimeout(state.timeoutTimer);
+        }
         const additionalMs = additionalSeconds * 1000;
         state.summary.expiresAt = Math.max(state.summary.expiresAt, Date.now()) + additionalMs;
         const newTimer = setTimeout(() => {
@@ -385,20 +392,16 @@ export class WaitStore {
     cancelAll(): number {
         let count = 0;
         for (const [waitId] of Array.from(this.waits)) {
-            if (this.cancel(waitId).ok)
+            if (this.cancel(waitId).ok) {
                 count++;
+            }
         }
         return count;
     }
     getPendingWait(waitId: string): WaitSummary | undefined {
         return this.waits.get(waitId)?.summary;
     }
-    cancel(waitId: string): {
-        ok: true;
-    } | {
-        ok: false;
-        reason: string;
-    } {
+    cancel(waitId: string): { ok: true } | { ok: false; reason: string } {
         const state = this.waits.get(waitId);
         if (!state) {
             return { ok: false, reason: 'wait-not-found' };
@@ -411,8 +414,43 @@ export class WaitStore {
         state.resolve({ kind: 'canceled' });
         return { ok: true };
     }
-    private createWaitId(): string {
-        return `wait_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    interrupt(waitId: string, reason: InterruptReason): { ok: true } | { ok: false; reason: string } {
+        const state = this.waits.get(waitId);
+        if (!state) {
+            return { ok: false, reason: 'wait-not-found' };
+        }
+        this.emit({
+            type: 'wait_interrupted',
+            waitId,
+            sessionId: state.summary.sessionId,
+            reason,
+        });
+        state.resolve({ kind: 'interrupted', reason });
+        return { ok: true };
+    }
+    interruptSession(sessionId: string, reason: InterruptReason): number {
+        let count = 0;
+        for (const [waitId, state] of Array.from(this.waits)) {
+            if (state.summary.sessionId !== sessionId) {
+                continue;
+            }
+            if (this.interrupt(waitId, reason).ok) {
+                count++;
+            }
+        }
+        return count;
+    }
+    interruptAll(reason: InterruptReason): number {
+        let count = 0;
+        for (const [waitId] of Array.from(this.waits)) {
+            if (this.interrupt(waitId, reason).ok) {
+                count++;
+            }
+        }
+        return count;
+    }
+    shutdownPersist(): void {
+        this.interruptAll('shutdown');
     }
     private pushHistory(item: WaitHistoryItem): void {
         this.history.unshift(item);
@@ -421,22 +459,6 @@ export class WaitStore {
             this.history.length = APP_CONFIG.waitHistoryMaxItems;
             this.persistence?.rewrite(this.history);
         }
-    }
-    shutdownPersist(): void {
-        const now = Date.now();
-        for (const [, state] of this.waits) {
-            const { summary } = state;
-            if (state.timeoutTimer)
-                clearTimeout(state.timeoutTimer);
-            this.pushHistory({
-                ...summary,
-                resolvedAt: now,
-                resolution: 'interrupted',
-                finalMessageLength: 0,
-            });
-        }
-        this.waits.clear();
-        this.sessionActiveWaits.clear();
     }
     private emit(event: WaitStoreEvent): void {
         try {

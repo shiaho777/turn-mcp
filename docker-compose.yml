@@ -11,8 +11,8 @@ services:
       TURN_MCP_HTTP_PORT: "3737"
       TURN_MCP_HTTP_PATH: "/mcp"
       TURN_MCP_REQUIRE_API_KEY: "true"
-      TURN_MCP_API_KEY: "replace_me_operator_key"
-      TURN_MCP_VIEWER_API_KEY: "replace_me_viewer_key"
+      TURN_MCP_API_KEY: ${TURN_MCP_API_KEY:?Set TURN_MCP_API_KEY}
+      TURN_MCP_VIEWER_API_KEY: ${TURN_MCP_VIEWER_API_KEY:-}
       TURN_MCP_EVENT_LOG_FILE: "/app/logs/events.jsonl"
       TURN_MCP_HISTORY_FILE: "/app/logs/history.jsonl"
     volumes:

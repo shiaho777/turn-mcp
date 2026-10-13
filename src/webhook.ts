@@ -2,8 +2,16 @@ import { createHmac } from 'crypto';
 import * as http from 'http';
 import * as https from 'https';
 import { APP_CONFIG, Logger } from './config.js';
+import { webhookUrlError } from './net-policy.js';
 const logger = new Logger('Webhook');
 const TIMEOUT_MS = 5000;
+
+function escapeHtml(value: string): string {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 1000;
 function buildSlackPayload(event: {
@@ -58,6 +66,10 @@ export class WebhookNotifier {
     private readonly secret: string;
     private readonly format: 'json' | 'slack' | 'discord';
     constructor(url: string, eventsFilter: string) {
+        const urlError = webhookUrlError(url);
+        if (urlError) {
+            throw new Error(urlError);
+        }
         this.url = url;
         const parsed = eventsFilter.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
         this.events = new Set(parsed.length > 0 ? parsed : ['wait_created']);
@@ -133,15 +145,15 @@ export class TelegramNotifier {
     }): void {
         if (!this.events.has(event.type))
             return;
-        const lines: string[] = [`<b>Turn MCP: ${event.type}</b>\n`];
+        const lines: string[] = [`<b>Turn MCP: ${escapeHtml(event.type)}</b>\n`];
         if (event['sessionId'])
-            lines.push(`🔑 Session: <code>${String(event['sessionId']).slice(0, 20)}</code>`);
+            lines.push(`🔑 Session: <code>${escapeHtml(String(event['sessionId']).slice(0, 20))}</code>`);
         if (event['agentName'])
-            lines.push(`🤖 Agent: <b>${String(event['agentName'])}</b>`);
+            lines.push(`🤖 Agent: <b>${escapeHtml(String(event['agentName']))}</b>`);
         if (event['context'])
-            lines.push(`\n${String(event['context']).slice(0, 800)}`);
+            lines.push(`\n${escapeHtml(String(event['context']).slice(0, 800))}`);
         if (event['question'])
-            lines.push(`\n❓ ${String(event['question']).slice(0, 200)}`);
+            lines.push(`\n❓ ${escapeHtml(String(event['question']).slice(0, 200))}`);
         const text = lines.join('\n');
         const payload = JSON.stringify({ chat_id: this.chatId, text, parse_mode: 'HTML' });
         const urlObj = new URL(`https://api.telegram.org/bot${this.botToken}/sendMessage`);

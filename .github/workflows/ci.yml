@@ -30,3 +30,7 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # Merge gate: required check is this job. CI does not close Issues.
+      - name: Test
+        run: npm test

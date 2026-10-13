@@ -64,7 +64,12 @@ echo ""
 
 while IFS= read -r OLD_PID; do
   [ -z "$OLD_PID" ] && continue
-  echo -e "  ${YELLOW}⚠${NC}  Port 3737 in use (PID $OLD_PID) — stopping..."
+  echo -e "  ${YELLOW}⚠${NC}  Port 3737 in use (PID $OLD_PID) — asking it to stop..."
+  kill -TERM "$OLD_PID" 2>/dev/null
+done < <(lsof -ti tcp:3737 2>/dev/null)
+sleep 0.4
+while IFS= read -r OLD_PID; do
+  [ -z "$OLD_PID" ] && continue
   kill -9 "$OLD_PID" 2>/dev/null
 done < <(lsof -ti tcp:3737 2>/dev/null)
 for _i in 1 2 3 4 5 6; do

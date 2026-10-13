@@ -7,6 +7,7 @@ git clone https://github.com/shiahonb777/turn-mcp.git
 cd turn-mcp
 npm install
 npm run build
+npm test
 npm start
 ```
 
@@ -17,7 +18,7 @@ The console runs at `http://127.0.0.1:3737/` and the MCP endpoint is `http://127
 - Keep the runtime dependency surface small.
 - Prefer the existing TypeScript and vanilla JS style.
 - Update `README.md` when behavior or configuration changes.
-- Run `npm run build` before opening a pull request.
+- Run `npm test` before opening a pull request.
 
 ## Pull Requests
 
