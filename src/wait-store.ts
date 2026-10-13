@@ -232,9 +232,6 @@ export class WaitStore {
                     });
                     finish({ kind: 'timeout' });
                 }, input.timeoutMs);
-                if (typeof timeoutTimer.unref === 'function') {
-                    timeoutTimer.unref();
-                }
             }
             this.waits.set(waitId, {
                 summary,
@@ -376,9 +373,6 @@ export class WaitStore {
             this.emit({ type: 'wait_timeout', waitId, sessionId: state.summary.sessionId });
             state.resolve({ kind: 'timeout' });
         }, state.summary.expiresAt - Date.now());
-        if (typeof newTimer.unref === 'function') {
-            newTimer.unref();
-        }
         state.timeoutTimer = newTimer;
         this.emit({
             type: 'wait_extended',
