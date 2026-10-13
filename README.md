@@ -37,6 +37,8 @@ work -> turn.wait -> human reply -> work -> turn.wait -> human reply
 
 That makes it useful for approvals, branching decisions, operator handoffs, review queues, and long-running assisted workflows.
 
+The tool result is the operator's reply, unchanged. Every wait ends in one terminal state: reply, timeout, cancel, or interrupt. A session that closes, or a server that shuts down, resolves the wait instead of leaving it hanging.
+
 ## What You Get
 
 - MCP tool aliases: `turn.wait`, `turn_wait`, `turn`
@@ -213,11 +215,15 @@ Those files tell the agent to use `turn.wait` as the communication boundary inst
 | `TURN_MCP_RATE_LIMIT_MAX` | `120` | Requests per IP |
 | `TURN_MCP_RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate limit window |
 | `TURN_MCP_MAX_CONCURRENT_WAITS_PER_SESSION` | `10` | Per-session concurrency cap |
-| `TURN_MCP_REINFORCEMENT_SUFFIX` | built-in | Appended reminder text |
+| `TURN_MCP_MAX_PENDING_WAITS` | `100` | Process-wide pending wait cap |
+| `TURN_MCP_MAX_CONTEXT_CHARS` | `100000` | Maximum `context` length |
+| `TURN_MCP_EVENT_LOG_MAX_ITEMS` | `2000` | Event log entries kept in memory |
 
 ## Authentication
 
-Auth is off by default. When enabled, send either of these headers:
+Auth stays off by default on loopback. Setting an API key turns it on. A non-loopback bind refuses to start unless `TURN_MCP_API_KEY` is set and auth stays enabled. The browser console is same-origin only: cross-site pages and DNS-rebinding hosts are rejected, and API keys are not accepted in the query string.
+
+When auth is enabled, send either of these headers, or the `turn_mcp_key` cookie set by the console:
 
 ```text
 x-turn-mcp-api-key: <key>

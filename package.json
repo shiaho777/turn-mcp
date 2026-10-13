@@ -17,7 +17,8 @@
     "build": "npm run compile",
     "prepublishOnly": "npm run build",
     "start": "node dist/server.js",
-    "dev": "tsc -w -p ./"
+    "dev": "tsc -w -p ./",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
   },
   "keywords": [
     "mcp",

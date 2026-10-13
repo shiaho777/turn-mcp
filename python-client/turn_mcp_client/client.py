@@ -15,6 +15,9 @@ class TurnMcpTimeout(TurnMcpError):
 class TurnMcpCanceled(TurnMcpError):
     pass
 
+class TurnMcpInterrupted(TurnMcpError):
+    pass
+
 class TurnMcpClient:
 
     def __init__(self, base_url: Optional[str]=None, api_key: Optional[str]=None, default_timeout_seconds: int=600) -> None:
@@ -54,6 +57,8 @@ class TurnMcpClient:
             raise TurnMcpTimeout('Wait timed out — the human did not respond in time.')
         if resolution == 'canceled':
             raise TurnMcpCanceled('Wait was canceled by the operator.')
+        if resolution == 'interrupted':
+            raise TurnMcpInterrupted('Wait was interrupted because the server shut down or the session ended.')
         if resolution == 'message':
             message = body.get('message')
             if not isinstance(message, str):

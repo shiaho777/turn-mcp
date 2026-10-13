@@ -37,6 +37,8 @@
 
 它适合审批、分支决策、值班交接、代码审阅、运维确认、长流程辅助执行。
 
+工具返回的就是操作者的原话。每次等待都会进入一个终态：回复、超时、取消或中断。会话断开或服务关闭时，挂起的等待会被结束，而不是一直留在控制台里。
+
 ## 功能概览
 
 - MCP 工具别名：`turn.wait`、`turn_wait`、`turn`
@@ -213,11 +215,15 @@ except TurnMcpCanceled:
 | `TURN_MCP_RATE_LIMIT_MAX` | `120` | 每 IP 请求上限 |
 | `TURN_MCP_RATE_LIMIT_WINDOW_SECONDS` | `60` | 限流窗口 |
 | `TURN_MCP_MAX_CONCURRENT_WAITS_PER_SESSION` | `10` | 单会话并发 wait 上限 |
-| `TURN_MCP_REINFORCEMENT_SUFFIX` | 内置 | 自动追加的提醒文本 |
+| `TURN_MCP_MAX_PENDING_WAITS` | `100` | 进程内挂起等待上限 |
+| `TURN_MCP_MAX_CONTEXT_CHARS` | `100000` | `context` 最大长度 |
+| `TURN_MCP_EVENT_LOG_MAX_ITEMS` | `2000` | 内存中保留的事件条数 |
 
 ## 鉴权
 
-默认关闭。开启后通过任一 Header 传递密钥：
+监听在本机回环地址时，鉴权默认关闭。监听地址不是回环地址时，必须设置 `TURN_MCP_API_KEY`，并且不能关掉鉴权，否则进程拒绝启动。浏览器控制台只接受同源请求：跨站页面和 DNS 重绑定的 Host 会被拒绝，密钥也不再从查询参数读取。
+
+开启鉴权后，用下面任一请求头，或控制台写入的 `turn_mcp_key` cookie：
 
 ```text
 x-turn-mcp-api-key: <key>

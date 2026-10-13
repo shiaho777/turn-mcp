@@ -98,9 +98,9 @@ def human_checkpoint(context: str) -> str:
 
 ### `client.wait(context, question, options, agent_name, session_id, timeout_seconds) → str`
 
-Blocks until a human replies. Returns the reply string.
+Blocks until a human replies. Returns that reply unchanged.
 
-Raises `TurnMcpTimeout`, `TurnMcpCanceled`, or `TurnMcpError`.
+Raises `TurnMcpTimeout`, `TurnMcpCanceled`, `TurnMcpInterrupted`, or `TurnMcpError`.
 
 ### `await client.async_wait(...)` 
 

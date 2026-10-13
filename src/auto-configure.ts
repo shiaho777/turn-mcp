@@ -2,6 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { Logger } from './config.js';
+import { mcpServerUrlError } from './net-policy.js';
+
 const logger = new Logger('AutoConfigure');
 export type ConfigAction = 'created' | 'updated' | 'already-configured' | 'not-configured' | 'not-found' | 'error';
 export interface ConfigResult {
@@ -11,313 +13,339 @@ export interface ConfigResult {
     action: ConfigAction;
     error?: string;
 }
+export interface ConfigureOptions {
+    homeDir?: string;
+}
 type MergeFn = (existing: Record<string, unknown>, serverUrl: string) => Record<string, unknown>;
 interface ClientDef {
     name: string;
-    resolvePath: () => string;
+    resolvePath: (home: string) => string;
     merge: MergeFn;
 }
-function tildify(p: string): string {
-    const home = os.homedir();
-    return p.startsWith(home) ? '~' + p.slice(home.length) : p;
+
+function homeOf(options?: ConfigureOptions): string {
+    return options?.homeDir || os.homedir();
 }
-function claudeDesktopPath(): string {
-    const home = os.homedir();
-    if (process.platform === 'darwin')
+function tildify(filePath: string, home: string): string {
+    return filePath.startsWith(home) ? '~' + filePath.slice(home.length) : filePath;
+}
+function claudeDesktopPath(home: string): string {
+    if (process.platform === 'darwin') {
         return path.join(home, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
-    if (process.platform === 'win32')
+    }
+    if (process.platform === 'win32') {
         return path.join(process.env['APPDATA'] || home, 'Claude', 'claude_desktop_config.json');
+    }
     return path.join(home, '.config', 'Claude', 'claude_desktop_config.json');
 }
-function vscodePath(): string {
-    const home = os.homedir();
-    if (process.platform === 'darwin')
+function vscodePath(home: string): string {
+    if (process.platform === 'darwin') {
         return path.join(home, 'Library', 'Application Support', 'Code', 'User', 'mcp.json');
-    if (process.platform === 'win32')
+    }
+    if (process.platform === 'win32') {
         return path.join(process.env['APPDATA'] || home, 'Code', 'User', 'mcp.json');
+    }
     return path.join(home, '.config', 'Code', 'User', 'mcp.json');
 }
-function antigravityPath(): string {
-    const home = os.homedir();
-    if (process.platform === 'darwin')
+function antigravityPath(home: string): string {
+    if (process.platform === 'darwin') {
         return path.join(home, 'Library', 'Application Support', 'Antigravity', 'mcp.json');
-    if (process.platform === 'win32')
+    }
+    if (process.platform === 'win32') {
         return path.join(process.env['APPDATA'] || home, 'Antigravity', 'mcp.json');
+    }
     return path.join(home, '.config', 'Antigravity', 'mcp.json');
 }
 const CLIENT_DEFS: Record<string, ClientDef> = {
     windsurf: {
         name: 'Windsurf',
-        resolvePath: () => path.join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json'),
-        merge: (e, url) => ({ ...e, mcpServers: { ...(e['mcpServers'] as object || {}), 'turn-mcp-web': { serverUrl: url } } }),
+        resolvePath: (home) => path.join(home, '.codeium', 'windsurf', 'mcp_config.json'),
+        merge: (existing, url) => ({ ...existing, mcpServers: { ...(existing['mcpServers'] as object || {}), 'turn-mcp-web': { serverUrl: url } } }),
     },
     cursor: {
         name: 'Cursor',
-        resolvePath: () => path.join(os.homedir(), '.cursor', 'mcp.json'),
-        merge: (e, url) => ({ ...e, mcpServers: { ...(e['mcpServers'] as object || {}), 'turn-mcp-web': { url } } }),
+        resolvePath: (home) => path.join(home, '.cursor', 'mcp.json'),
+        merge: (existing, url) => ({ ...existing, mcpServers: { ...(existing['mcpServers'] as object || {}), 'turn-mcp-web': { url } } }),
     },
     'claude-desktop': {
         name: 'Claude Desktop',
         resolvePath: claudeDesktopPath,
-        merge: (e, url) => ({ ...e, mcpServers: { ...(e['mcpServers'] as object || {}), 'turn-mcp-web': { url } } }),
+        merge: (existing, url) => ({ ...existing, mcpServers: { ...(existing['mcpServers'] as object || {}), 'turn-mcp-web': { url } } }),
     },
     vscode: {
         name: 'VS Code',
         resolvePath: vscodePath,
-        merge: (e, url) => ({ ...e, servers: { ...(e['servers'] as object || {}), 'turn-mcp-web': { type: 'http', url } } }),
+        merge: (existing, url) => ({ ...existing, servers: { ...(existing['servers'] as object || {}), 'turn-mcp-web': { type: 'http', url } } }),
     },
     'claude-code': {
         name: 'Claude Code',
-        resolvePath: () => path.join(os.homedir(), '.claude.json'),
-        merge: (e, url) => ({ ...e, mcpServers: { ...(e['mcpServers'] as object || {}), 'turn-mcp-web': { type: 'http', url } } }),
+        resolvePath: (home) => path.join(home, '.claude.json'),
+        merge: (existing, url) => ({ ...existing, mcpServers: { ...(existing['mcpServers'] as object || {}), 'turn-mcp-web': { type: 'http', url } } }),
     },
     opencode: {
         name: 'OpenCode',
-        resolvePath: () => path.join(os.homedir(), '.config', 'opencode', 'opencode.json'),
-        merge: (e, url) => ({
-            ...e,
+        resolvePath: (home) => path.join(home, '.config', 'opencode', 'opencode.json'),
+        merge: (existing, url) => ({
+            ...existing,
             '$schema': 'https://opencode.ai/config.json',
-            mcp: { ...(e['mcp'] as object || {}), 'turn-mcp-web': { type: 'remote', url, enabled: true } },
+            mcp: { ...(existing['mcp'] as object || {}), 'turn-mcp-web': { type: 'remote', url, enabled: true } },
         }),
     },
     antigravity: {
         name: 'Antigravity',
         resolvePath: antigravityPath,
-        merge: (e, url) => ({ ...e, mcpServers: { ...(e['mcpServers'] as object || {}), 'turn-mcp-web': { url } } }),
+        merge: (existing, url) => ({ ...existing, mcpServers: { ...(existing['mcpServers'] as object || {}), 'turn-mcp-web': { url } } }),
     },
     openclaw: {
         name: 'OpenClaw',
-        resolvePath: () => path.join(os.homedir(), 'openclaw.json'),
-        merge: (e, url) => ({ ...e, mcpServers: { ...(e['mcpServers'] as object || {}), 'turn-mcp-web': { type: 'http', url } } }),
+        resolvePath: (home) => path.join(home, 'openclaw.json'),
+        merge: (existing, url) => ({ ...existing, mcpServers: { ...(existing['mcpServers'] as object || {}), 'turn-mcp-web': { type: 'http', url } } }),
     },
 };
 export const TARGETED_CLIENTS = Object.keys(CLIENT_DEFS);
-function readJson(filePath: string): Record<string, unknown> {
+
+function readJson(filePath: string): { ok: true; data: Record<string, unknown> } | { ok: false; error: string } {
+    if (!fs.existsSync(filePath)) {
+        return { ok: true, data: {} };
+    }
+    let raw: string;
     try {
-        if (!fs.existsSync(filePath))
-            return {};
-        const raw = fs.readFileSync(filePath, 'utf-8').trim();
-        return raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+        raw = fs.readFileSync(filePath, 'utf-8').trim();
+    }
+    catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+    if (!raw) {
+        return { ok: true, data: {} };
+    }
+    try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            return { ok: false, error: 'Config file must be a JSON object. Refusing to overwrite it.' };
+        }
+        return { ok: true, data: parsed as Record<string, unknown> };
     }
     catch {
-        return {};
+        return { ok: false, error: 'Config file is not valid JSON. Refusing to overwrite it.' };
     }
 }
 function writeJson(filePath: string, data: Record<string, unknown>): void {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    const tmp = `${filePath}.turn-mcp-tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    fs.renameSync(tmp, filePath);
 }
 function hasTurnMcpWeb(config: Record<string, unknown>): boolean {
     for (const key of ['mcpServers', 'servers', 'mcp']) {
         const section = config[key] as Record<string, unknown> | undefined;
-        if (section && typeof section === 'object' && 'turn-mcp-web' in section)
+        if (section && typeof section === 'object' && 'turn-mcp-web' in section) {
             return true;
+        }
     }
     return false;
 }
-export function checkClientStatus(target: string, _serverUrl: string): 'configured' | 'not-configured' | 'not-found' {
+function validatedUrl(serverUrl: string): { ok: true; url: string } | { ok: false; error: string } {
+    const error = mcpServerUrlError(serverUrl);
+    if (error) {
+        return { ok: false, error };
+    }
+    return { ok: true, url: serverUrl.trim() };
+}
+export function checkClientStatus(target: string, _serverUrl: string, options?: ConfigureOptions): 'configured' | 'not-configured' | 'not-found' {
+    const home = homeOf(options);
     if (target === 'system-shell') {
-        const home = os.homedir();
-        for (const p of ['.zshrc', '.bashrc', '.profile'].map(f => path.join(home, f))) {
-            if (fs.existsSync(p) && fs.readFileSync(p, 'utf-8').includes('TURN_MCP_SERVER='))
-                return 'configured';
-        }
-        return 'not-configured';
+        return 'not-found';
     }
     if (target === 'system-mcp') {
-        const p = path.join(os.homedir(), '.config', 'mcp', 'servers.json');
-        if (!fs.existsSync(p))
+        const filePath = path.join(home, '.config', 'mcp', 'servers.json');
+        if (!fs.existsSync(filePath)) {
             return 'not-configured';
-        return hasTurnMcpWeb(readJson(p)) ? 'configured' : 'not-configured';
+        }
+        const parsed = readJson(filePath);
+        if (!parsed.ok) {
+            return 'not-configured';
+        }
+        return hasTurnMcpWeb(parsed.data) ? 'configured' : 'not-configured';
     }
     const def = CLIENT_DEFS[target];
-    if (!def)
+    if (!def) {
         return 'not-found';
-    const filePath = def.resolvePath();
-    if (!fs.existsSync(filePath))
+    }
+    const filePath = def.resolvePath(home);
+    if (!fs.existsSync(filePath)) {
         return 'not-found';
-    return hasTurnMcpWeb(readJson(filePath)) ? 'configured' : 'not-configured';
+    }
+    const parsed = readJson(filePath);
+    if (!parsed.ok) {
+        return 'not-configured';
+    }
+    return hasTurnMcpWeb(parsed.data) ? 'configured' : 'not-configured';
 }
-export function configureClient(target: string, serverUrl: string): ConfigResult {
+export function configureClient(target: string, serverUrl: string, options?: ConfigureOptions): ConfigResult {
+    const home = homeOf(options);
     const def = CLIENT_DEFS[target];
     if (!def) {
         return { target, name: target, displayPath: target, action: 'error', error: `Unknown client: ${target}` };
     }
-    const filePath = def.resolvePath();
-    const displayPath = tildify(filePath);
+    const url = validatedUrl(serverUrl);
+    const filePath = def.resolvePath(home);
+    const displayPath = tildify(filePath, home);
+    if (!url.ok) {
+        return { target, name: def.name, displayPath, action: 'error', error: url.error };
+    }
+    const existing = readJson(filePath);
+    if (!existing.ok) {
+        return { target, name: def.name, displayPath, action: 'error', error: existing.error };
+    }
+    if (hasTurnMcpWeb(existing.data)) {
+        return { target, name: def.name, displayPath, action: 'already-configured' };
+    }
     try {
-        const existing = readJson(filePath);
-        if (hasTurnMcpWeb(existing)) {
-            return { target, name: def.name, displayPath, action: 'already-configured' };
-        }
-        const merged = def.merge(existing, serverUrl);
+        const merged = def.merge(existing.data, url.url);
         writeJson(filePath, merged);
-        const action: ConfigAction = Object.keys(existing).length === 0 ? 'created' : 'updated';
+        const action: ConfigAction = Object.keys(existing.data).length === 0 ? 'created' : 'updated';
         logger.info(`Configured ${def.name} → ${filePath} (${action})`);
         return { target, name: def.name, displayPath, action };
     }
-    catch (err) {
-        const error = err instanceof Error ? err.message : String(err);
-        logger.error(`configure ${def.name}`, err);
-        return { target, name: def.name, displayPath, action: 'error', error };
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error(`configure ${def.name}`, error);
+        return { target, name: def.name, displayPath, action: 'error', error: message };
     }
 }
-export function configureSystemShell(serverUrl: string): ConfigResult {
-    const home = os.homedir();
-    const profiles = ['.zshrc', '.bashrc', '.profile'].map(f => path.join(home, f));
-    const marker = 'TURN_MCP_SERVER=';
-    const lines = `\n# turn-mcp-web – auto-added by turn-mcp-web server\nexport TURN_MCP_SERVER="${serverUrl}"\n`;
-    let target = path.join(home, '.zshrc');
-    for (const p of profiles) {
-        if (fs.existsSync(p)) {
-            target = p;
-            break;
-        }
+export function configureSystemMcp(serverUrl: string, options?: ConfigureOptions): ConfigResult {
+    const home = homeOf(options);
+    const filePath = path.join(home, '.config', 'mcp', 'servers.json');
+    const displayPath = tildify(filePath, home);
+    const url = validatedUrl(serverUrl);
+    if (!url.ok) {
+        return { target: 'system-mcp', name: 'System MCP Registry', displayPath, action: 'error', error: url.error };
     }
-    const displayPath = tildify(target);
+    const existing = readJson(filePath);
+    if (!existing.ok) {
+        return { target: 'system-mcp', name: 'System MCP Registry', displayPath, action: 'error', error: existing.error };
+    }
+    if (hasTurnMcpWeb(existing.data)) {
+        return { target: 'system-mcp', name: 'System MCP Registry', displayPath, action: 'already-configured' };
+    }
     try {
-        const existing = fs.existsSync(target) ? fs.readFileSync(target, 'utf-8') : '';
-        if (existing.includes(marker)) {
-            return { target: 'system-shell', name: 'Shell Profile', displayPath, action: 'already-configured' };
-        }
-        fs.appendFileSync(target, lines, 'utf-8');
-        logger.info(`Added TURN_MCP_SERVER to ${target}`);
-        return { target: 'system-shell', name: 'Shell Profile', displayPath, action: 'updated' };
-    }
-    catch (err) {
-        return { target: 'system-shell', name: 'Shell Profile', displayPath, action: 'error', error: String(err) };
-    }
-}
-export function configureSystemMcp(serverUrl: string): ConfigResult {
-    const filePath = path.join(os.homedir(), '.config', 'mcp', 'servers.json');
-    const displayPath = tildify(filePath);
-    try {
-        const existing = readJson(filePath);
-        if (hasTurnMcpWeb(existing)) {
-            return { target: 'system-mcp', name: 'System MCP Registry', displayPath, action: 'already-configured' };
-        }
         const merged = {
-            ...existing,
-            mcpServers: { ...(existing['mcpServers'] as object || {}), 'turn-mcp-web': { url: serverUrl } },
+            ...existing.data,
+            mcpServers: { ...(existing.data['mcpServers'] as object || {}), 'turn-mcp-web': { url: url.url } },
         };
         writeJson(filePath, merged);
         logger.info(`Updated system MCP registry → ${filePath}`);
-        return { target: 'system-mcp', name: 'System MCP Registry', displayPath, action: Object.keys(existing).length === 0 ? 'created' : 'updated' };
+        return {
+            target: 'system-mcp',
+            name: 'System MCP Registry',
+            displayPath,
+            action: Object.keys(existing.data).length === 0 ? 'created' : 'updated',
+        };
     }
-    catch (err) {
-        return { target: 'system-mcp', name: 'System MCP Registry', displayPath, action: 'error', error: String(err) };
+    catch (error) {
+        return { target: 'system-mcp', name: 'System MCP Registry', displayPath, action: 'error', error: error instanceof Error ? error.message : String(error) };
     }
 }
-export function configureBatch(targets: string[], serverUrl: string): ConfigResult[] {
-    return targets.map(t => {
-        if (t === 'system-shell')
-            return configureSystemShell(serverUrl);
-        if (t === 'system-mcp')
-            return configureSystemMcp(serverUrl);
-        return configureClient(t, serverUrl);
+export function configureBatch(targets: string[], serverUrl: string, options?: ConfigureOptions): ConfigResult[] {
+    return targets.map((target) => {
+        if (target === 'system-shell') {
+            return {
+                target,
+                name: 'Shell Profile',
+                displayPath: target,
+                action: 'error',
+                error: 'Shell profile writes are disabled. Add the MCP server in the client config instead.',
+            };
+        }
+        if (target === 'system-mcp') {
+            return configureSystemMcp(serverUrl, options);
+        }
+        return configureClient(target, serverUrl, options);
     });
 }
-export function unconfigureClient(target: string): ConfigResult {
+export function unconfigureClient(target: string, options?: ConfigureOptions): ConfigResult {
+    const home = homeOf(options);
     const def = CLIENT_DEFS[target];
     if (!def) {
         return { target, name: target, displayPath: target, action: 'error', error: `Unknown client: ${target}` };
     }
-    const filePath = def.resolvePath();
-    const displayPath = tildify(filePath);
+    const filePath = def.resolvePath(home);
+    const displayPath = tildify(filePath, home);
     if (!fs.existsSync(filePath)) {
         return { target, name: def.name, displayPath, action: 'not-found' };
     }
+    const parsed = readJson(filePath);
+    if (!parsed.ok) {
+        return { target, name: def.name, displayPath, action: 'error', error: parsed.error };
+    }
+    let changed = false;
+    const config = parsed.data;
+    for (const key of ['mcpServers', 'servers', 'mcp'] as const) {
+        const section = config[key] as Record<string, unknown> | undefined;
+        if (section && 'turn-mcp-web' in section) {
+            const copy = { ...section };
+            delete copy['turn-mcp-web'];
+            config[key] = copy;
+            changed = true;
+        }
+    }
+    if (!changed) {
+        return { target, name: def.name, displayPath, action: 'not-configured' };
+    }
     try {
-        const config = readJson(filePath);
-        let changed = false;
-        for (const key of ['mcpServers', 'servers', 'mcp'] as const) {
-            const section = config[key] as Record<string, unknown> | undefined;
-            if (section && 'turn-mcp-web' in section) {
-                const copy = { ...section };
-                delete copy['turn-mcp-web'];
-                config[key] = copy;
-                changed = true;
-            }
-        }
-        if (!changed) {
-            return { target, name: def.name, displayPath, action: 'not-configured' };
-        }
         writeJson(filePath, config);
         logger.info(`Removed turn-mcp-web from ${def.name} → ${filePath}`);
         return { target, name: def.name, displayPath, action: 'updated' };
     }
-    catch (err) {
-        const error = err instanceof Error ? err.message : String(err);
-        logger.error(`unconfigure ${def.name}`, err);
-        return { target, name: def.name, displayPath, action: 'error', error };
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error(`unconfigure ${def.name}`, error);
+        return { target, name: def.name, displayPath, action: 'error', error: message };
     }
 }
-export function unconfigureSystemShell(): ConfigResult {
-    const home = os.homedir();
-    const profiles = ['.zshrc', '.bashrc', '.profile'].map(f => path.join(home, f));
-    const marker = 'TURN_MCP_SERVER=';
-    let cleaned = 0;
-    let lastTarget = path.join(home, '.zshrc');
-    for (const p of profiles) {
-        if (!fs.existsSync(p))
-            continue;
-        lastTarget = p;
-        const content = fs.readFileSync(p, 'utf-8');
-        if (!content.includes(marker))
-            continue;
-        const cleaned_content = content
-            .split('\n')
-            .filter((line, idx, arr) => {
-            if (line.includes(marker))
-                return false;
-            if (line.trim().startsWith('# turn-mcp-web') &&
-                idx + 1 < arr.length && arr[idx + 1].includes(marker))
-                return false;
-            return true;
-        })
-            .join('\n')
-            .replace(/\n{3,}/g, '\n\n');
-        fs.writeFileSync(p, cleaned_content, 'utf-8');
-        cleaned++;
-        logger.info(`Removed TURN_MCP_SERVER from ${p}`);
-    }
-    const displayPath = tildify(lastTarget);
-    if (cleaned === 0) {
-        return { target: 'system-shell', name: 'Shell Profile', displayPath, action: 'not-configured' };
-    }
-    return { target: 'system-shell', name: 'Shell Profile', displayPath, action: 'updated' };
-}
-export function unconfigureSystemMcp(): ConfigResult {
-    const filePath = path.join(os.homedir(), '.config', 'mcp', 'servers.json');
-    const displayPath = tildify(filePath);
+export function unconfigureSystemMcp(options?: ConfigureOptions): ConfigResult {
+    const home = homeOf(options);
+    const filePath = path.join(home, '.config', 'mcp', 'servers.json');
+    const displayPath = tildify(filePath, home);
     if (!fs.existsSync(filePath)) {
         return { target: 'system-mcp', name: 'System MCP Registry', displayPath, action: 'not-found' };
     }
+    const parsed = readJson(filePath);
+    if (!parsed.ok) {
+        return { target: 'system-mcp', name: 'System MCP Registry', displayPath, action: 'error', error: parsed.error };
+    }
+    if (!hasTurnMcpWeb(parsed.data)) {
+        return { target: 'system-mcp', name: 'System MCP Registry', displayPath, action: 'not-configured' };
+    }
+    const section = parsed.data['mcpServers'] as Record<string, unknown> | undefined;
+    if (section) {
+        const copy = { ...section };
+        delete copy['turn-mcp-web'];
+        parsed.data['mcpServers'] = copy;
+    }
     try {
-        const config = readJson(filePath);
-        if (!hasTurnMcpWeb(config)) {
-            return { target: 'system-mcp', name: 'System MCP Registry', displayPath, action: 'not-configured' };
-        }
-        const section = config['mcpServers'] as Record<string, unknown>;
-        if (section) {
-            const copy = { ...section };
-            delete copy['turn-mcp-web'];
-            config['mcpServers'] = copy;
-        }
-        writeJson(filePath, config);
-        logger.info(`Removed turn-mcp-web from system MCP registry`);
+        writeJson(filePath, parsed.data);
+        logger.info('Removed turn-mcp-web from system MCP registry');
         return { target: 'system-mcp', name: 'System MCP Registry', displayPath, action: 'updated' };
     }
-    catch (err) {
-        return { target: 'system-mcp', name: 'System MCP Registry', displayPath, action: 'error', error: String(err) };
+    catch (error) {
+        return { target: 'system-mcp', name: 'System MCP Registry', displayPath, action: 'error', error: error instanceof Error ? error.message : String(error) };
     }
 }
-export function unconfigureBatch(targets: string[]): ConfigResult[] {
-    return targets.map(t => {
-        if (t === 'system-shell')
-            return unconfigureSystemShell();
-        if (t === 'system-mcp')
-            return unconfigureSystemMcp();
-        return unconfigureClient(t);
+export function unconfigureBatch(targets: string[], options?: ConfigureOptions): ConfigResult[] {
+    return targets.map((target) => {
+        if (target === 'system-shell') {
+            return {
+                target,
+                name: 'Shell Profile',
+                displayPath: target,
+                action: 'not-configured',
+                error: 'Shell profiles are no longer modified.',
+            };
+        }
+        if (target === 'system-mcp') {
+            return unconfigureSystemMcp(options);
+        }
+        return unconfigureClient(target, options);
     });
 }

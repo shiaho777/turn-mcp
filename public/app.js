@@ -27,7 +27,6 @@ var $waitCountdown = document.getElementById('waitCountdown');
 var $settingsView = document.getElementById('settingsView');
 var $authHint = document.getElementById('authHint');
 var $apiKeyInput = document.getElementById('apiKeyInput');
-var $reinforcementText = document.getElementById('reinforcementText');
 var $mcpEndpointUrl = document.getElementById('mcpEndpointUrl');
 var $setupGuideContent = document.getElementById('setupGuideContent');
 var $sessionFilter = document.getElementById('sessionFilter');
@@ -49,7 +48,12 @@ function getDefaultTemplates() {
 var requireApiKey = false;
 var apiKey = localStorage.getItem(API_KEY_STORAGE) || '';
 var currentRole = 'none';
-var reinforcementSuffix = '';
+function syncApiKeyCookie() {
+    if (apiKey)
+        document.cookie = 'turn_mcp_key=' + encodeURIComponent(apiKey) + '; Path=/; SameSite=Strict';
+    else
+        document.cookie = 'turn_mcp_key=; Path=/; Max-Age=0; SameSite=Strict';
+}
 var serverTimeoutEnabled = true;
 var webhookUrl = '';
 var webhookEvents = '';
@@ -291,7 +295,7 @@ function copyCode(btn) {
     });
 }
 function codeWrap(preContent) {
-    return '<div class="code-wrap"><button class="copy-btn" onclick="copyCode(this)" title="' + t('btn.copy') + '">' + ICONS.copy + '</button>' + preContent + '</div>';
+    return '<div class="code-wrap"><button class="copy-btn" type="button" title="' + t('btn.copy') + '">' + ICONS.copy + '</button>' + preContent + '</div>';
 }
 function syntaxHighlight(code, lang) {
     var l = (lang || '').toLowerCase();
@@ -482,10 +486,10 @@ function buildContextHtml(text, waitId) {
         var ctxClass = 'msg-context md-content' + (isLong ? ' collapsible' : '');
         var html = '<div class="' + ctxClass + '">' + md + '</div>';
         if (isTruncated) {
-            html += '<button class="expand-btn" onclick="loadFullContext(this,\'' + esc(waitId) + '\')">' + t('chat.loadFullContext') + '</button>';
+            html += '<button class="expand-btn" type="button" data-action="load-full" data-wait-id="' + esc(waitId) + '">' + t('chat.loadFullContext') + '</button>';
         }
         if (isLong) {
-            html += '<button class="expand-btn" onclick="toggleExpand(this)">' + t('chat.showMore') + '</button>';
+            html += '<button class="expand-btn" type="button" data-action="toggle-expand">' + t('chat.showMore') + '</button>';
         }
         return html;
     }
@@ -716,9 +720,6 @@ async function loadSessions() {
     }
     await refreshAuthRole();
     var data = await apiRequest('/api/sessions');
-    reinforcementSuffix = data.reinforcementSuffix || '';
-    if ($reinforcementText)
-        $reinforcementText.textContent = reinforcementSuffix;
     webhookUrl = data.webhookUrl || '';
     webhookEvents = data.webhookEvents || '';
     if ($webhookUrlInput && document.activeElement !== $webhookUrlInput)
@@ -1094,6 +1095,10 @@ async function sendReply() {
     if (sessionPendingWaits.length === 0)
         return;
     var message = ($replyInput.value || '').trim();
+    if (!message) {
+        showErrorToast(t('chat.emptyReply'));
+        return;
+    }
     var waitSnapshot = sessionPendingWaits[0];
     try {
         await apiRequest('/api/waits/' + encodeURIComponent(waitSnapshot.id) + '/respond', 'POST', { message: message });
@@ -1228,18 +1233,22 @@ document.getElementById('saveApiKeyBtn').addEventListener('click', function () {
         localStorage.setItem(API_KEY_STORAGE, apiKey);
     else
         localStorage.removeItem(API_KEY_STORAGE);
+    syncApiKeyCookie();
     if ($authHint)
         $authHint.textContent = apiKey ? t('auth.saved') : t('auth.enterKey');
     initialLoad();
+    connectSSE();
 });
 document.getElementById('clearApiKeyBtn').addEventListener('click', function () {
     apiKey = '';
     $apiKeyInput.value = '';
     localStorage.removeItem(API_KEY_STORAGE);
+    syncApiKeyCookie();
     if ($authHint)
         $authHint.textContent = t('auth.cleared');
     currentRole = 'none';
     initialLoad();
+    connectSSE();
 });
 document.getElementById('notifToggleBtn').addEventListener('click', function () {
     notifSettings.desktop = !notifSettings.desktop;
@@ -1412,13 +1421,18 @@ function adjustPolling(fast) {
         clearInterval(pollTimer);
     pollTimer = setInterval(fallbackPoll, fast ? FALLBACK_POLL_INTERVAL : REFRESH_INTERVAL);
 }
+var sseSource = null;
 function connectSSE() {
     if (typeof EventSource === 'undefined')
         return;
-    var url = '/api/stream';
-    if (apiKey)
-        url += '?token=' + encodeURIComponent(apiKey);
-    var source = new EventSource(url);
+    syncApiKeyCookie();
+    if (sseSource) {
+        sseSource.onerror = null;
+        sseSource.close();
+        sseSource = null;
+    }
+    var source = new EventSource('/api/stream');
+    sseSource = source;
     source.onopen = function () {
         sseReconnectDelay = SSE_BACKOFF_BASE;
         if (sseEverConnected) {
@@ -1750,12 +1764,27 @@ document.getElementById('acClearGenericBtn')?.addEventListener('click', async fu
     acUpdateGenericResult(results);
 });
 document.getElementById('acConfigSystemBtn')?.addEventListener('click', async function () {
-    var results = await acConfigureTargets(['system-shell', 'system-mcp']);
+    var results = await acConfigureTargets(['system-mcp']);
     acRenderSystemResults(results);
 });
 document.getElementById('acClearSystemBtn')?.addEventListener('click', async function () {
-    var results = await acUnconfigureTargets(['system-shell', 'system-mcp']);
+    var results = await acUnconfigureTargets(['system-mcp']);
     acRenderSystemResults(results);
+});
+document.addEventListener('click', function (e) {
+    var copyBtn = e.target.closest && e.target.closest('.copy-btn');
+    if (copyBtn) {
+        copyCode(copyBtn);
+        return;
+    }
+    var actionBtn = e.target.closest && e.target.closest('[data-action]');
+    if (!actionBtn)
+        return;
+    var action = actionBtn.getAttribute('data-action');
+    if (action === 'toggle-expand')
+        toggleExpand(actionBtn);
+    else if (action === 'load-full')
+        loadFullContext(actionBtn, actionBtn.getAttribute('data-wait-id') || '');
 });
 function acRenderSystemResults(results) {
     var listEl = document.getElementById('acSystemResults');

@@ -36,6 +36,7 @@ turn.wait(
 ```
 
 - `context` is required. Write it for a cold reader.
+- The tool result is the operator's exact reply. A closed session or a server shutdown comes back as `[interrupted]`.
 - `question` should ask one concrete thing.
 - `options` should be used when the branch set is known.
 - `agentName` should stay stable within the workflow.

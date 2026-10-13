@@ -63,8 +63,9 @@ export const APP_CONFIG = {
     rateLimitMax: parseIntEnv('TURN_MCP_RATE_LIMIT_MAX', 120, 0, 100000),
     rateLimitWindowSeconds: parseIntEnv('TURN_MCP_RATE_LIMIT_WINDOW_SECONDS', 60, 1, 3600),
     maxConcurrentWaitsPerSession: parseIntEnv('TURN_MCP_MAX_CONCURRENT_WAITS_PER_SESSION', 10, 1, 100),
-    reinforcementSuffix: process.env.TURN_MCP_REINFORCEMENT_SUFFIX ||
-        '[Reminder] Before ending your next reply, please call turn.wait (or turn_wait / turn) to continue this task, unless the user explicitly asks to stop.',
+    maxPendingWaits: parseIntEnv('TURN_MCP_MAX_PENDING_WAITS', 100, 1, 10000),
+    maxContextChars: parseIntEnv('TURN_MCP_MAX_CONTEXT_CHARS', 100000, 1000, 500000),
+    eventLogMaxItems: parseIntEnv('TURN_MCP_EVENT_LOG_MAX_ITEMS', 2000, 100, 100000),
 };
 export const runtimeConfig = {
     timeoutEnabled: APP_CONFIG.defaultTimeoutSeconds > 0,
@@ -72,11 +73,13 @@ export const runtimeConfig = {
     webhookUrl: APP_CONFIG.webhookUrl,
     webhookEvents: APP_CONFIG.webhookEvents,
 };
-const SETTINGS_FILE = (process.env.TURN_MCP_SETTINGS_FILE || '').trim() ||
-    path.join(process.cwd(), '.turn-mcp-settings.json');
+export function settingsFilePath(): string {
+    const override = (process.env.TURN_MCP_SETTINGS_FILE || '').trim();
+    return override || path.join(process.cwd(), '.turn-mcp-settings.json');
+}
 export function loadSettings(): void {
     try {
-        const raw = fs.readFileSync(SETTINGS_FILE, 'utf-8');
+        const raw = fs.readFileSync(settingsFilePath(), 'utf-8');
         const data = JSON.parse(raw) as Record<string, unknown>;
         if (typeof data.timeoutEnabled === 'boolean') {
             runtimeConfig.timeoutEnabled = data.timeoutEnabled;
@@ -105,7 +108,7 @@ export function saveSettings(): void {
             webhookUrl: runtimeConfig.webhookUrl,
             webhookEvents: runtimeConfig.webhookEvents,
         };
-        fs.writeFileSync(SETTINGS_FILE, JSON.stringify(data, null, 2), 'utf-8');
+        fs.writeFileSync(settingsFilePath(), JSON.stringify(data, null, 2), 'utf-8');
     }
     catch {
     }

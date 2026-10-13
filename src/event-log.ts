@@ -37,18 +37,40 @@ export class EventLogger {
                 catch {
                 }
             }
-            parsed.reverse();
-            this.cache.push(...parsed);
-            for (const item of parsed) {
+            const kept = parsed.slice(-APP_CONFIG.eventLogMaxItems);
+            kept.reverse();
+            this.cache.push(...kept);
+            for (const item of kept) {
                 const rawType = typeof item.type === 'string' ? item.type.trim() : '';
                 if (rawType) {
                     this.typeCountCache.set(rawType, (this.typeCountCache.get(rawType) || 0) + 1);
                 }
             }
-            this.logger.info(`Loaded ${parsed.length} events into cache`);
+            this.logger.info(`Loaded ${kept.length} events into cache`);
         }
         catch (error) {
             this.logger.error('load event log file into cache', error);
+        }
+    }
+    private remember(record: Record<string, unknown>): void {
+        this.cache.unshift(record);
+        const rawType = typeof record.type === 'string' ? record.type.trim() : '';
+        if (rawType) {
+            this.typeCountCache.set(rawType, (this.typeCountCache.get(rawType) || 0) + 1);
+        }
+        while (this.cache.length > APP_CONFIG.eventLogMaxItems) {
+            const dropped = this.cache.pop();
+            const droppedType = dropped && typeof dropped.type === 'string' ? dropped.type.trim() : '';
+            if (!droppedType) {
+                continue;
+            }
+            const next = (this.typeCountCache.get(droppedType) || 1) - 1;
+            if (next <= 0) {
+                this.typeCountCache.delete(droppedType);
+            }
+            else {
+                this.typeCountCache.set(droppedType, next);
+            }
         }
     }
     log(type: string, data: Record<string, unknown> = {}): void {
@@ -59,11 +81,7 @@ export class EventLogger {
         };
         const line = JSON.stringify(record);
         this.logger.info(line);
-        this.cache.unshift(record);
-        const trimmedType = type.trim();
-        if (trimmedType) {
-            this.typeCountCache.set(trimmedType, (this.typeCountCache.get(trimmedType) || 0) + 1);
-        }
+        this.remember(record);
         if (!this.filePath) {
             return;
         }

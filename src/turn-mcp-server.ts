@@ -2,47 +2,51 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { APP_CONFIG, runtimeConfig, Logger } from './config.js';
+import { parseTurnArgs } from './turn-args.js';
 import { WaitStore } from './wait-store.js';
-interface TurnArgs {
-    context: string;
-    question?: string;
-    timeoutSeconds?: number;
-    options?: string[];
-    agentName?: string;
-}
+
 const logger = new Logger('TurnMcpServer');
+const TOOL_DESCRIPTION = [
+    'Pause this run until the operator replies in the Turn MCP browser console.',
+    'The tool result is the operator\'s reply, unchanged.',
+    'After you act on it, call this tool again at the next checkpoint unless they told you to stop.',
+    'Other results are [timeout], [canceled], [interrupted], or [busy].',
+    '暂停当前运行，直到操作者在浏览器控制台回复。返回文本就是对方的原话。',
+    '处理完后，除非对方要求停止，否则在下一个卡点再次调用。',
+].join('\n');
 const TURN_INPUT_SCHEMA = {
     type: 'object',
     properties: {
         context: {
             type: 'string',
-            description: 'Current progress summary (required) / 当前进度摘要（必填，尽量简洁）',
+            description: 'What you finished, what you found, and what happens next. Required. Write it for someone who has not seen the logs.',
         },
         question: {
             type: 'string',
-            description: 'Question for the user (optional) / 你希望用户回答的问题（可选）',
+            description: 'The one decision or fact you need. Optional.',
         },
         timeoutSeconds: {
             type: 'integer',
             minimum: 10,
             maximum: 3600,
-            description: 'Per-call timeout in seconds (optional) / 本次等待超时时间（秒，可选）',
+            description: 'How long to wait for this reply, in seconds. Optional.',
         },
         options: {
             type: 'array',
             items: { type: 'string', maxLength: 200 },
             maxItems: 10,
-            description: 'Predefined reply choices shown as buttons (optional) / 预设回复选项，显示为按钮（可选）',
+            description: 'Reply buttons, when the choices are already known. Optional.',
         },
         agentName: {
             type: 'string',
             maxLength: 100,
-            description: 'Label identifying the calling agent or tool (optional) / 标识调用方的名称（可选）',
+            description: 'Stable name for the calling agent. Optional.',
         },
     },
     required: ['context'],
     additionalProperties: false,
 } as const;
+
 export class TurnWaitMcpServer {
     private readonly server: Server;
     constructor(private readonly waitStore: WaitStore, private readonly getSessionId: () => string) {
@@ -60,7 +64,7 @@ export class TurnWaitMcpServer {
             return {
                 tools: APP_CONFIG.toolNames.map((name) => ({
                     name,
-                    description: 'Pause execution and wait for human input via browser console. Use for approvals, clarifications, or branch decisions.\n暂停执行并等待用户输入（通过浏览器控制台回复）。适用于审批、澄清、分支决策等卡点。',
+                    description: TOOL_DESCRIPTION,
                     inputSchema: TURN_INPUT_SCHEMA,
                 })),
             };
@@ -77,17 +81,22 @@ export class TurnWaitMcpServer {
                     isError: true,
                 };
             }
-            const parsed = this.parseArgs(request.params.arguments);
+            const parsed = parseTurnArgs(request.params.arguments);
             if (!parsed.ok) {
                 return {
                     content: [{ type: 'text' as const, text: parsed.error }],
                     isError: true,
                 };
             }
+            if (parsed.args.context.length > APP_CONFIG.maxContextChars) {
+                return {
+                    content: [{ type: 'text' as const, text: `Invalid args: "context" exceeds ${APP_CONFIG.maxContextChars} characters.` }],
+                    isError: true,
+                };
+            }
             const effectiveTimeout = runtimeConfig.timeoutEnabled
                 ? (parsed.args.timeoutSeconds || runtimeConfig.defaultTimeoutSeconds)
                 : 0;
-            const timeoutMs = effectiveTimeout * 1000;
             const sessionId = this.getSessionId();
             const resolution = await this.waitStore.waitForResponse({
                 sessionId,
@@ -95,98 +104,33 @@ export class TurnWaitMcpServer {
                 question: parsed.args.question,
                 options: parsed.args.options,
                 agentName: parsed.args.agentName,
-                timeoutMs,
+                timeoutMs: effectiveTimeout * 1000,
             });
             if (resolution.kind === 'timeout') {
-                return {
-                    content: [
-                        {
-                            type: 'text' as const,
-                            text: '[timeout] User did not respond before timeout. Call turn.wait again when ready.',
-                        },
-                    ],
-                };
+                return { content: [{ type: 'text' as const, text: '[timeout] The operator did not reply before the deadline. Call turn.wait again when you are ready.' }] };
             }
             if (resolution.kind === 'canceled') {
-                return {
-                    content: [
-                        {
-                            type: 'text' as const,
-                            text: '[canceled] User canceled this waiting request in web console.',
-                        },
-                    ],
-                };
+                return { content: [{ type: 'text' as const, text: '[canceled] The operator canceled this wait in the console.' }] };
             }
             if (resolution.kind === 'interrupted') {
-                return {
-                    content: [
-                        {
-                            type: 'text' as const,
-                            text: '[interrupted] The server was restarted while this wait was pending. Please call turn.wait again to resume.',
-                        },
-                    ],
-                };
+                const text = resolution.reason === 'shutdown'
+                    ? '[interrupted] The server shut down while this wait was pending. Call turn.wait again after it is back.'
+                    : '[interrupted] This session ended while waiting. Call turn.wait again to continue.';
+                return { content: [{ type: 'text' as const, text }] };
             }
             if (resolution.kind === 'busy') {
+                const limit = resolution.scope === 'global'
+                    ? APP_CONFIG.maxPendingWaits
+                    : APP_CONFIG.maxConcurrentWaitsPerSession;
                 return {
-                    content: [
-                        {
-                            type: 'text' as const,
-                            text: `[busy] Maximum concurrent waits (${APP_CONFIG.maxConcurrentWaitsPerSession}) reached for this session. Active wait IDs: ${resolution.activeWaitIds.join(', ')}`,
-                        },
-                    ],
+                    content: [{
+                        type: 'text' as const,
+                        text: `[busy] Too many waits are already open (${resolution.scope} limit ${limit}). Active wait IDs: ${resolution.activeWaitIds.join(', ')}`,
+                    }],
                 };
             }
             logger.info(`Resolved wait response for session=${sessionId}, len=${resolution.text.length}`);
-            return {
-                content: [{ type: 'text' as const, text: resolution.text }],
-            };
+            return { content: [{ type: 'text' as const, text: resolution.text }] };
         });
-    }
-    private parseArgs(raw: Record<string, unknown> | undefined): {
-        ok: true;
-        args: TurnArgs;
-    } | {
-        ok: false;
-        error: string;
-    } {
-        const context = raw?.context;
-        if (typeof context !== 'string' || context.trim().length === 0) {
-            return { ok: false, error: 'Invalid args: "context" must be a non-empty string.' };
-        }
-        const question = raw?.question;
-        if (question !== undefined && typeof question !== 'string') {
-            return { ok: false, error: 'Invalid args: "question" must be a string when provided.' };
-        }
-        const timeoutSeconds = raw?.timeoutSeconds;
-        if (timeoutSeconds !== undefined) {
-            if (!Number.isInteger(timeoutSeconds) || Number(timeoutSeconds) < 10 || Number(timeoutSeconds) > 3600) {
-                return { ok: false, error: 'Invalid args: "timeoutSeconds" must be an integer between 10 and 3600.' };
-            }
-        }
-        const options = raw?.options;
-        if (options !== undefined) {
-            if (!Array.isArray(options) ||
-                options.length > 10 ||
-                !options.every((o) => typeof o === 'string' && o.trim().length > 0 && o.length <= 200)) {
-                return { ok: false, error: 'Invalid args: "options" must be an array of up to 10 non-empty strings (max 200 chars each).' };
-            }
-        }
-        const agentName = raw?.agentName;
-        if (agentName !== undefined) {
-            if (typeof agentName !== 'string' || agentName.length > 100) {
-                return { ok: false, error: 'Invalid args: "agentName" must be a string of at most 100 chars when provided.' };
-            }
-        }
-        return {
-            ok: true,
-            args: {
-                context: context.trim(),
-                question: typeof question === 'string' ? question.trim() : undefined,
-                timeoutSeconds: typeof timeoutSeconds === 'number' ? timeoutSeconds : undefined,
-                options: Array.isArray(options) ? options.map((o) => String(o).trim()).filter(Boolean) : undefined,
-                agentName: typeof agentName === 'string' ? agentName.trim() || undefined : undefined,
-            },
-        };
     }
 }
